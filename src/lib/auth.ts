@@ -74,6 +74,15 @@ export const auth = {
   // Get current user
   async getCurrentUser(): Promise<User | null> {
     try {
+      // Check if Supabase is properly configured
+      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+      const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+      
+      if (!supabaseUrl || !supabaseAnonKey || supabaseUrl.includes('placeholder')) {
+        console.warn('Supabase not configured. Please set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in .env file');
+        return null;
+      }
+
       const { data: { user } } = await supabase.auth.getUser();
       
       if (!user) return null;
@@ -85,6 +94,7 @@ export const auth = {
         last_sign_in_at: user.last_sign_in_at || new Date().toISOString()
       };
     } catch (err) {
+      console.error('Error getting current user:', err);
       return null;
     }
   },

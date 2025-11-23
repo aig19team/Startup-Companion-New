@@ -12,6 +12,7 @@ export interface GeneratedDocument {
   pdf_file_name: string | null;
   generation_status: 'generating' | 'completed' | 'failed';
   service_type?: string;
+  business_name?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -58,21 +59,52 @@ export async function getDocumentsBySession(sessionId: string): Promise<Generate
 
 export async function getDocumentsByUser(userId: string): Promise<GeneratedDocument[]> {
   try {
-    const { data, error } = await supabase
+    // Fetch documents
+    const { data: documents, error: docError } = await supabase
       .from('generated_documents')
       .select('*')
       .eq('user_id', userId)
       .order('created_at', { ascending: false });
 
-    if (error) {
-      console.error('Error fetching documents by user:', error);
+    if (docError) {
+      console.error('Error fetching documents by user:', docError);
       return [];
     }
 
-    return (data || []).map(doc => ({
-      ...doc,
-      key_points: typeof doc.key_points === 'string' ? JSON.parse(doc.key_points) : doc.key_points
-    }));
+    if (!documents || documents.length === 0) {
+      return [];
+    }
+
+    // Get unique session IDs
+    const sessionIds = [...new Set(documents.map(doc => doc.session_id))];
+
+    // Fetch business profiles for these sessions
+    const { data: profiles, error: profileError } = await supabase
+      .from('business_profiles')
+      .select('session_id, business_name')
+      .in('session_id', sessionIds);
+
+    if (profileError) {
+      console.error('Error fetching business profiles:', profileError);
+    }
+
+    // Create a map of session_id -> business_name
+    const businessNameMap = new Map<string, string | null>();
+    if (profiles) {
+      profiles.forEach(profile => {
+        businessNameMap.set(profile.session_id, profile.business_name || null);
+      });
+    }
+
+    // Map documents with business names
+    return documents.map(doc => {
+      const businessName = businessNameMap.get(doc.session_id) || null;
+      return {
+        ...doc,
+        business_name: businessName,
+        key_points: typeof doc.key_points === 'string' ? JSON.parse(doc.key_points) : doc.key_points
+      };
+    });
   } catch (error) {
     console.error('Unexpected error fetching documents by user:', error);
     return [];

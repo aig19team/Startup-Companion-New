@@ -29,7 +29,7 @@ The guide MUST include:
    - Check name availability: https://www.mca.gov.in/mcafoportal/companyLLPNameAvailability.do
    - Trademark search: https://ipindiaservices.gov.in/publicsearch
 
-3. **Complete Registration Timeline** - Day-by-day process:
+3. **Complete Registration Timeline** - Day-by-day process, Analyze the business profile and user details and based on that suggest intelligently what all following steps are required to be taken:
    - Day 1-2: Apply for DSC (Digital Signature Certificate)
    - Day 3-4: Apply for DIN/DPIN
    - Day 5: Reserve company name (RUN form)
@@ -40,14 +40,14 @@ The guide MUST include:
    - Day 26-30: GST registration (if turnover > ₹40 lakhs for services or ₹20 lakhs for goods)
 
 4. **Required Documents Checklist**
-   For Directors/Partners:
+   For Directors/Partners: Suggest intelligently the documents based on the business profile and user details.
    - PAN Card (mandatory)
    - Aadhaar Card
    - Passport size photographs
    - Address proof
    - Bank statements (last 2 months)
    
-   For Registered Office:
+   For Registered Office: Suggest intelligently the documents based on the business profile and user details.
    - Rent agreement / NOC from owner
    - Utility bills (last 2 months)
    - Property documents
@@ -59,6 +59,7 @@ The guide MUST include:
    - Total estimated cost
 
 6. **Official Government Portals**:
+    Analyze the business profile and user details and based on that suggest intelligently the official government portals to be used.
    - MCA Portal: https://www.mca.gov.in/mcafoportal/
    - DSC Application: https://www.mca.gov.in/MinistryV2/digitalsignature.html
    - Name Availability: https://www.mca.gov.in/mcafoportal/companyLLPNameAvailability.do

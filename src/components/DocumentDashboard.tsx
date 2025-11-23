@@ -6,6 +6,7 @@ interface Document {
   type: 'registration' | 'branding' | 'compliance' | 'hr';
   title: string;
   keyPoints: string[];
+  fullContent: string;
   pdfUrl?: string;
   status: 'generating' | 'completed' | 'failed';
 }

@@ -155,10 +155,15 @@ Generate a comprehensive HR setup guide for this business covering policies, doc
     const keyPoints = extractKeyPoints(fullContent);
 
     console.log('Content generated successfully, starting PDF generation...');
-    let pdfResult = null;
-    let pdfError = null;
+    console.log('HR Guide - Content length:', fullContent.length);
+    console.log('HR Guide - User ID:', userId);
+    console.log('HR Guide - Business Name:', profile.business_name || 'Your Business');
+    
+    let pdfResult: { pdfUrl: string; fileName: string } | null = null;
+    let pdfError: any = null;
 
     try {
+      console.log('HR Guide - Calling generateAndStorePDF with documentType: hr');
       pdfResult = await generateAndStorePDF(
         {
           userId,
@@ -169,12 +174,18 @@ Generate a comprehensive HR setup guide for this business covering policies, doc
         supabaseClient
       );
       if (pdfResult) {
-        console.log('PDF generated and stored successfully');
+        console.log('HR Guide - PDF generated and stored successfully');
+        console.log('HR Guide - PDF URL:', pdfResult.pdfUrl);
+        console.log('HR Guide - PDF File Name:', pdfResult.fileName);
       } else {
-        console.warn('PDF generation returned null, document will be saved without PDF');
+        console.error('HR Guide - PDF generation returned null!');
+        console.error('HR Guide - This means the PDF was not uploaded to storage');
+        console.error('HR Guide - Check the logs above for upload errors');
       }
     } catch (pdfGenError) {
-      console.error('PDF generation threw error:', pdfGenError);
+      console.error('HR Guide - PDF generation threw error:', pdfGenError);
+      console.error('HR Guide - Error stack:', pdfGenError instanceof Error ? pdfGenError.stack : 'No stack trace');
+      console.error('HR Guide - Error details:', JSON.stringify(pdfGenError, null, 2));
       pdfError = pdfGenError;
     }
 

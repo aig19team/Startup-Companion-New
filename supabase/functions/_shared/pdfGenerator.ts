@@ -31,6 +31,11 @@ export async function generateAndStorePDF(
     const pdfBuffer = await generatePDFBuffer(content, documentType, businessName);
     console.log(`PDF buffer generated successfully, size: ${pdfBuffer.length} bytes`);
 
+    // Ensure the folder structure exists by attempting to create it if needed
+    // Supabase storage creates folders automatically on upload, but we log for debugging
+    console.log(`Attempting to upload PDF to: ${fileName}`);
+    console.log(`PDF buffer size: ${pdfBuffer.length} bytes`);
+    
     const { data: uploadData, error: uploadError } = await supabaseClient.storage
       .from('business-documents')
       .upload(fileName, pdfBuffer, {
@@ -40,11 +45,26 @@ export async function generateAndStorePDF(
 
     if (uploadError) {
       console.error('Error uploading PDF to storage:', uploadError);
-      console.error('Upload error details:', JSON.stringify(uploadError));
+      console.error('Upload error details:', JSON.stringify(uploadError, null, 2));
+      console.error('Document type:', documentType);
+      console.error('File name attempted:', fileName);
+      console.error('User ID:', userId);
+      
+      // Check if it's a permission error
+      if (uploadError.message?.includes('permission') || uploadError.message?.includes('policy')) {
+        console.error('Storage permission error detected. Check RLS policies for business-documents bucket.');
+      }
+      
+      // Check if it's a bucket error
+      if (uploadError.message?.includes('bucket') || uploadError.message?.includes('not found')) {
+        console.error('Bucket error detected. Ensure business-documents bucket exists and is configured correctly.');
+      }
+      
       return null;
     }
 
     console.log(`PDF uploaded successfully to: ${fileName}`);
+    console.log(`Upload data:`, JSON.stringify(uploadData));
 
     const { data: urlData } = supabaseClient.storage
       .from('business-documents')

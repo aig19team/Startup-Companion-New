@@ -1,12 +1,14 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, User, Bot, Star, Phone, Mail, FileCheck } from 'lucide-react';
+import { Send, User, Bot, Phone, Mail, FileCheck, History, Loader2, FileText, Palette, Shield, Users, CheckCircle2, Star } from 'lucide-react';
 import { auth } from '../lib/auth';
 import { submitRating, getMentorForService } from '../lib/rating';
 import { createSession, saveChatMessage, updateSessionStatus } from '../lib/session';
 import { supabase } from '../lib/supabase';
-import { getDocumentsBySession, type GeneratedDocument } from '../lib/documentService';
+import { getDocumentsBySession, getDocumentsByUser, type GeneratedDocument } from '../lib/documentService';
+import { fetchActiveMentors, type MentorProfile } from '../lib/mentors';
 import DocumentDashboard from './DocumentDashboard';
 import DocumentViewer from './DocumentViewer';
+import DocumentHistory from './DocumentHistory';
 
 interface Message {
   id: string;
@@ -42,8 +44,101 @@ interface ChatInterfaceProps {
   onNavigate?: (page: string) => void;
 }
 
-type ViewMode = 'chat' | 'dashboard' | 'document';
+type ViewMode = 'chat' | 'dashboard' | 'document' | 'history' | 'mentors';
 type FlowStage = 'initial' | 'questioning' | 'generating' | 'documents' | 'rating';
+
+// Document Generation Loader Component
+interface DocumentGenerationLoaderProps {
+  documents: Document[];
+}
+
+const DocumentGenerationLoader: React.FC<DocumentGenerationLoaderProps> = ({ documents }) => {
+  const documentTypes = [
+    { type: 'registration', label: 'Registration Guide', icon: FileText, color: 'text-blue-400' },
+    { type: 'compliance', label: 'Compliance Guide', icon: Shield, color: 'text-green-400' },
+    { type: 'hr', label: 'HR Setup Guide', icon: Users, color: 'text-orange-400' },
+    { type: 'branding', label: 'Branding Guide', icon: Palette, color: 'text-purple-400' }
+  ];
+
+  const getDocumentStatus = (type: string) => {
+    const doc = documents.find(d => d.type === type);
+    if (!doc) return 'pending';
+    return doc.status;
+  };
+
+  // Count completed documents
+  const completedCount = documents.filter(doc => doc.status === 'completed').length;
+  const totalCount = documentTypes.length;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-sm font-medium text-gray-300">Generating Documents:</p>
+        <p className="text-xs text-gray-400">
+          {completedCount}/{totalCount} completed
+        </p>
+      </div>
+      {documentTypes.map(({ type, label, icon: Icon, color }) => {
+        const status = getDocumentStatus(type);
+        const isGenerating = status === 'generating';
+        const isCompleted = status === 'completed';
+        const isFailed = status === 'failed';
+        const isPending = status === 'pending';
+
+        return (
+          <div 
+            key={type} 
+            className={`flex items-center space-x-3 p-3 rounded-lg transition-all duration-300 ${
+              isGenerating 
+                ? 'bg-blue-500/10 border border-blue-500/20' 
+                : isCompleted
+                ? 'bg-green-500/10 border border-green-500/20'
+                : isFailed
+                ? 'bg-red-500/10 border border-red-500/20'
+                : 'bg-gray-700/50 border border-gray-600/50'
+            }`}
+          >
+            <div className={`flex-shrink-0 ${color} ${isGenerating ? 'animate-pulse' : ''}`}>
+              <Icon className="h-5 w-5" />
+            </div>
+            <div className="flex-1">
+              <p className={`text-sm ${
+                isCompleted ? 'text-green-300' : 
+                isFailed ? 'text-red-300' : 
+                isGenerating ? 'text-blue-300' : 
+                'text-gray-200'
+              }`}>
+                {label}
+              </p>
+              {isGenerating && (
+                <p className="text-xs text-gray-400 mt-1">Creating content...</p>
+              )}
+            </div>
+            <div className="flex-shrink-0">
+              {isGenerating && (
+                <div className="relative">
+                  <Loader2 className="h-5 w-5 text-blue-400 animate-spin" />
+                  <div className="absolute inset-0 border-2 border-blue-400/20 rounded-full animate-ping" />
+                </div>
+              )}
+              {isCompleted && (
+                <CheckCircle2 className="h-5 w-5 text-green-400" />
+              )}
+              {isFailed && (
+                <div className="h-5 w-5 rounded-full bg-red-500 flex items-center justify-center">
+                  <span className="text-white text-xs font-bold">!</span>
+                </div>
+              )}
+              {isPending && (
+                <div className="h-5 w-5 rounded-full bg-gray-600 animate-pulse" />
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+};
 
 const QUESTIONS = [
   { id: 1, field: 'business_name', prompt: 'What is the company name or preferred company name?' },
@@ -69,6 +164,12 @@ const ChatInterface = ({ onNavigate }: ChatInterfaceProps) => {
   const [selectedDocument, setSelectedDocument] = useState<Document | null>(null);
   const [awaitingRating, setAwaitingRating] = useState(false);
   const [ratingFeedback, setRatingFeedback] = useState<string>('');
+  const [historyDocs, setHistoryDocs] = useState<GeneratedDocument[]>([]);
+  const [historyLoading, setHistoryLoading] = useState<boolean>(false);
+  const [mentors, setMentors] = useState<MentorProfile[]>([]);
+  const [mentorsLoading, setMentorsLoading] = useState<boolean>(false);
+  const [mentorsError, setMentorsError] = useState<string | null>(null);
+  const [hasGeneratedDocuments, setHasGeneratedDocuments] = useState<boolean>(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -76,10 +177,23 @@ const ChatInterface = ({ onNavigate }: ChatInterfaceProps) => {
     scrollToBottom();
   }, [messages]);
 
+  // Scroll to bottom when documents status changes (for loader visibility)
+  useEffect(() => {
+    if ((flowStage === 'generating' || flowStage === 'documents') && 
+        documents.some(doc => doc.status === 'generating')) {
+      scrollToBottom();
+    }
+  }, [documents, flowStage]);
+
   useEffect(() => {
     initializeChat();
   }, []);
 
+  useEffect(() => {
+    if (currentUser?.id) {
+      checkUserHasDocuments(currentUser.id);
+    }
+  }, [currentUser?.id]);
 
   useEffect(() => {
     if (currentSessionId && (viewMode === 'dashboard' || viewMode === 'document')) {
@@ -151,6 +265,47 @@ const ChatInterface = ({ onNavigate }: ChatInterfaceProps) => {
       }
     }
   };
+
+  const checkUserHasDocuments = async (userId: string) => {
+    try {
+      const { data, error } = await supabase
+        .from('generated_documents')
+        .select('id')
+        .eq('user_id', userId)
+        .eq('generation_status', 'completed')
+        .limit(1);
+
+      if (error) {
+        console.error('Error checking generated documents:', error);
+        setHasGeneratedDocuments(false);
+        return;
+      }
+
+      setHasGeneratedDocuments(!!data && data.length > 0);
+    } catch (err) {
+      console.error('Unexpected error checking generated documents:', err);
+      setHasGeneratedDocuments(false);
+    }
+  };
+
+  const loadMentors = async () => {
+    setMentorsError(null);
+    setMentorsLoading(true);
+    const { mentors: mentorProfiles, error } = await fetchActiveMentors();
+    setMentors(mentorProfiles);
+    if (error) {
+      setMentorsError('Unable to load mentors right now. Please try again.');
+    } else if (mentorProfiles.length === 0) {
+      setMentorsError('We will be onboarding mentors shortly. Please check back soon.');
+    }
+    setMentorsLoading(false);
+  };
+
+  useEffect(() => {
+    if (viewMode === 'mentors') {
+      loadMentors();
+    }
+  }, [viewMode]);
 
 
   const scrollToBottom = () => {
@@ -432,6 +587,9 @@ const ChatInterface = ({ onNavigate }: ChatInterfaceProps) => {
       }));
 
       setDocuments(formattedDocs);
+      if (formattedDocs.length > 0) {
+        setHasGeneratedDocuments(true);
+      }
     } catch (error) {
       console.error('Error loading documents from database:', error);
     }
@@ -507,34 +665,90 @@ const ChatInterface = ({ onNavigate }: ChatInterfaceProps) => {
       title: `${type.charAt(0).toUpperCase() + type.slice(1)} Guide`,
       keyPoints: [],
       fullContent: '',
-      status: 'generating' as const
+      status: 'generating' as const,
+      progressStage: 'content' as const
     }));
 
+    // Initialize documents and set flow stage, but KEEP user on chat interface
     setDocuments(initialDocs);
     setFlowStage('documents');
-    setViewMode('dashboard');
+    // Keep viewMode as 'chat' - don't navigate to dashboard yet
+    // User will see the progress message in chat interface
 
-    // Call edge functions for each document type
+    // Call edge functions for each document type (these run in parallel)
+    console.log('Starting document generation for all types...');
     const promises = documentTypes.map(type => generateDocument(type));
     await Promise.allSettled(promises);
 
-    // Load documents from database after generation
-    await loadDocumentsFromDatabase();
+    console.log('All document generation promises settled. Checking completion status...');
 
-    // Show completion message and ask for rating
-    setTimeout(async () => {
-      setFlowStage('rating');
-      setViewMode('chat');
+    // Poll the database to check if all documents are completed
+    // This ensures we wait for documents to be fully saved to the database
+    let allCompleted = false;
+    let attempts = 0;
+    const maxAttempts = 60; // Maximum 60 seconds wait time (1 minute)
+    const pollInterval = 2000; // Check every 2 seconds
 
-      const ratingMessage: Message = {
-        id: Date.now().toString(),
-        type: 'ai',
-        content: '🎉 All your business documents have been generated!\n\nYou can view them in the document dashboard.\n\nHow would you rate your experience?\n\nPlease type a number from 1-5:\n\n1 ⭐ - Poor\n2 ⭐⭐ - Fair\n3 ⭐⭐⭐ - Good\n4 ⭐⭐⭐⭐ - Very Good\n5 ⭐⭐⭐⭐⭐ - Excellent',
-        timestamp: new Date()
-      };
-      await addMessageAndSave(ratingMessage);
-      setAwaitingRating(true);
-    }, 3000);
+    while (!allCompleted && attempts < maxAttempts) {
+      await new Promise(resolve => setTimeout(resolve, pollInterval));
+      
+      try {
+        // Check database directly to see if all documents are completed
+        const { data: dbDocuments, error } = await supabase
+          .from('generated_documents')
+          .select('document_type, generation_status')
+          .eq('session_id', currentSessionId)
+          .eq('user_id', currentUser.id);
+
+        if (error) {
+          console.error('Error checking document status:', error);
+          attempts++;
+          continue;
+        }
+
+        if (dbDocuments && dbDocuments.length >= documentTypes.length) {
+          // Check if all documents are completed (not generating)
+          const allDone = dbDocuments.every(doc => 
+            doc.generation_status === 'completed' || doc.generation_status === 'failed'
+          );
+          
+          if (allDone) {
+            console.log('All documents completed! Loading final documents...');
+            allCompleted = true;
+            
+            // Load the final documents from database
+            await loadDocumentsFromDatabase();
+            
+            // Wait a moment for state to update
+            await new Promise(resolve => setTimeout(resolve, 500));
+            
+            break;
+          } else {
+            // Some documents still generating, update UI with current status
+            await loadDocumentsFromDatabase();
+          }
+        } else {
+          // Not all documents created yet, continue waiting
+          console.log(`Waiting for documents... (${dbDocuments?.length || 0}/${documentTypes.length} created)`);
+        }
+      } catch (error) {
+        console.error('Error polling document status:', error);
+      }
+
+      attempts++;
+    }
+
+    if (!allCompleted) {
+      console.warn('Document generation timeout - navigating to dashboard anyway');
+      // Load whatever documents we have
+      await loadDocumentsFromDatabase();
+    }
+
+    // All documents are generated (or timeout reached) - now navigate to dashboard
+    console.log('Navigating to document dashboard...');
+    setFlowStage('rating'); // Set to 'rating' stage so we can prompt for feedback when user returns to chat
+    setViewMode('dashboard');
+    setHasGeneratedDocuments(true);
   };
 
   const generateDocument = async (type: string) => {
@@ -677,10 +891,11 @@ const ChatInterface = ({ onNavigate }: ChatInterfaceProps) => {
           };
           await addMessageAndSave(finalMessage);
 
-          // Update session status to completed
+          // Update session status to completed and change flow stage
           if (currentSessionId) {
             await updateSessionStatus(currentSessionId, 'completed');
           }
+          setFlowStage('documents'); // Change flow stage after rating is submitted
         }, 1500);
       }
     } else if (ratingFeedback === 'awaiting') {
@@ -721,11 +936,15 @@ const ChatInterface = ({ onNavigate }: ChatInterfaceProps) => {
           };
           await addMessageAndSave(mentorMessage);
 
-          // Update session status to completed
+          // Update session status to completed and change flow stage
           if (currentSessionId) {
             await updateSessionStatus(currentSessionId, 'completed');
           }
+          setFlowStage('documents'); // Change flow stage after feedback is submitted
         }, 1500);
+      } else {
+        // No mentors found, still update flow stage
+        setFlowStage('documents');
       }
     } else {
       const errorMessage: Message = {
@@ -754,6 +973,190 @@ const ChatInterface = ({ onNavigate }: ChatInterfaceProps) => {
     setViewMode('dashboard');
   };
 
+  const handleBackToChat = async () => {
+    setViewMode('chat');
+    
+    // If we're in the rating stage, check if we need to show the rating prompt
+    if (flowStage === 'rating') {
+      // Check if rating has already been submitted for this session
+      let ratingSubmitted = false;
+      if (currentSessionId && currentUser?.id) {
+        try {
+          const { data: existingRating } = await supabase
+            .from('service_ratings')
+            .select('id')
+            .eq('session_id', currentSessionId)
+            .eq('user_id', currentUser.id)
+            .eq('service_type', 'confirmed_idea_flow')
+            .maybeSingle();
+          
+          ratingSubmitted = !!existingRating;
+        } catch (error) {
+          console.error('Error checking for existing rating:', error);
+        }
+      }
+      
+      // Only show rating prompt if rating hasn't been submitted yet
+      if (!ratingSubmitted) {
+        // Check if rating message already exists in messages
+        const hasRatingMessage = messages.some(msg => 
+          msg.type === 'ai' && msg.content.includes('How would you rate your experience?')
+        );
+        
+        if (!hasRatingMessage) {
+          const ratingMessage: Message = {
+            id: Date.now().toString(),
+            type: 'ai',
+            content: '🎉 All your business documents have been generated!\n\nYou can view them in the document dashboard.\n\nHow would you rate your experience?\n\nPlease type a number from 1-5:\n\n1 ⭐ - Poor\n2 ⭐⭐ - Fair\n3 ⭐⭐⭐ - Good\n4 ⭐⭐⭐⭐ - Very Good\n5 ⭐⭐⭐⭐⭐ - Excellent',
+            timestamp: new Date()
+          };
+          await addMessageAndSave(ratingMessage);
+          setAwaitingRating(true);
+        } else {
+          // Rating message exists, check if we're still awaiting rating
+          // If user hasn't submitted yet, set awaiting rating to true
+          if (!awaitingRating) {
+            setAwaitingRating(true);
+          }
+        }
+      } else {
+        // Rating already submitted, change flow stage
+        setFlowStage('documents');
+        setAwaitingRating(false);
+      }
+    }
+  };
+
+  const loadHistoryDocuments = async () => {
+    if (!currentUser?.id) return;
+    
+    setHistoryLoading(true);
+    try {
+      const allDocs = await getDocumentsByUser(currentUser.id);
+      setHistoryDocs(allDocs);
+      if (allDocs.length > 0) {
+        setHasGeneratedDocuments(true);
+      }
+    } catch (error) {
+      console.error('Error loading history documents:', error);
+      setHistoryDocs([]);
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  const handleViewHistoryDocument = (doc: GeneratedDocument) => {
+    // Convert GeneratedDocument to Document format for viewing
+    const viewDoc: Document = {
+      id: doc.id,
+      type: doc.document_type,
+      title: doc.document_title,
+      keyPoints: Array.isArray(doc.key_points) ? doc.key_points : typeof doc.key_points === 'string' ? JSON.parse(doc.key_points) : [],
+      fullContent: doc.full_content,
+      pdfUrl: doc.pdf_url || undefined,
+      status: doc.generation_status === 'completed' ? 'completed' : doc.generation_status === 'failed' ? 'failed' : 'generating'
+    };
+    setSelectedDocument(viewDoc);
+    setViewMode('document');
+  };
+
+  const handleDownloadHistoryDocument = async (doc: GeneratedDocument) => {
+    // If we have pdf_file_name but no pdf_url, download directly from storage
+    if (doc.pdf_file_name && !doc.pdf_url) {
+      try {
+        const { data, error } = await supabase.storage
+          .from('business-documents')
+          .download(doc.pdf_file_name);
+        
+        if (error) {
+          console.error('Error downloading from Supabase storage:', error);
+          return;
+        }
+        
+        const blob = data;
+        const url = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        
+        const fileName = doc.pdf_file_name.split('/').pop() || `${doc.document_title.replace(/\s+/g, '_')}.pdf`;
+        link.download = fileName;
+        
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        window.URL.revokeObjectURL(url);
+        return;
+      } catch (error) {
+        console.error('Error downloading PDF:', error);
+        return;
+      }
+    }
+    
+    // If we have pdf_url, use the existing logic
+    if (!doc.pdf_url) return;
+    
+    try {
+      let blob: Blob;
+      
+      // Check if it's a Supabase storage URL
+      if (doc.pdf_url.includes('supabase') && doc.pdf_file_name) {
+        // Use Supabase client to download (handles authentication)
+        const { data, error } = await supabase.storage
+          .from('business-documents')
+          .download(doc.pdf_file_name);
+        
+        if (error) {
+          console.error('Error downloading from Supabase storage:', error);
+          throw error;
+        }
+        
+        blob = data;
+      } else {
+        // Regular HTTP fetch for public URLs
+        const response = await fetch(doc.pdf_url);
+        if (!response.ok) throw new Error('Failed to fetch PDF');
+        blob = await response.blob();
+      }
+      
+      // Create a download link
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      
+      // Use pdf_file_name if available, otherwise generate a name
+      const fileName = doc.pdf_file_name 
+        ? doc.pdf_file_name.split('/').pop() || `${doc.document_title.replace(/\s+/g, '_')}.pdf`
+        : `${doc.document_title.replace(/\s+/g, '_')}.pdf`;
+      link.download = fileName;
+      
+      // Trigger download
+      document.body.appendChild(link);
+      link.click();
+      
+      // Cleanup
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Error downloading PDF:', error);
+      // Fallback: open in new tab if download fails
+      if (doc.pdf_url) {
+        window.open(doc.pdf_url, '_blank');
+      }
+    }
+  };
+
+
+  const handleOpenDashboard = async () => {
+    if (!hasGeneratedDocuments) return;
+    if (!documents.length && currentSessionId) {
+      await loadDocumentsFromDatabase();
+    }
+    setViewMode('dashboard');
+  };
+
+  const handleOpenMentors = () => {
+    setViewMode('mentors');
+  };
 
   const handleLogout = async () => {
     await auth.signOut();
@@ -769,8 +1172,103 @@ const ChatInterface = ({ onNavigate }: ChatInterfaceProps) => {
           documents={documents}
           onViewDocument={handleViewDocument}
           onDownloadPdf={handleDownloadPdf}
-          onBackToChat={() => setViewMode('chat')}
+          onBackToChat={handleBackToChat}
         />
+      );
+    }
+
+    if (viewMode === 'history') {
+      return (
+        <DocumentHistory
+          documents={historyDocs}
+          loading={historyLoading}
+          onView={handleViewHistoryDocument}
+          onDownload={(d) => handleDownloadHistoryDocument(d)}
+          onBackToChat={handleBackToChat}
+        />
+      );
+    }
+
+    if (viewMode === 'mentors') {
+      return (
+        <div className="flex-1 overflow-y-auto bg-gradient-to-b from-gray-950 via-gray-900 to-black">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+            <div className="flex flex-col gap-2 mb-8 md:flex-row md:items-center md:justify-between">
+              <div>
+                <p className="text-sm uppercase tracking-widest text-blue-400">Expert Network</p>
+                <h2 className="text-3xl font-bold text-white">Meet Your Mentors</h2>
+                <p className="text-gray-400 mt-2">
+                  Connect with specialists who have guided hundreds of founders through registration, compliance, branding, and HR.
+                </p>
+              </div>
+              <button
+                onClick={handleBackToChat}
+                className="self-start rounded-lg border border-gray-700 px-4 py-2 text-sm font-medium text-gray-200 transition-colors duration-200 hover:border-blue-500 hover:text-white"
+              >
+                Back to Chat
+              </button>
+            </div>
+
+            {mentorsLoading ? (
+              <div className="flex h-48 items-center justify-center rounded-2xl border border-gray-800 bg-gray-900/60">
+                <div className="flex items-center space-x-3 text-blue-300">
+                  <Loader2 className="h-5 w-5 animate-spin" />
+                  <span>Loading mentor profiles...</span>
+                </div>
+              </div>
+            ) : mentorsError ? (
+              <div className="rounded-2xl border border-yellow-500/40 bg-yellow-500/10 px-6 py-4 text-yellow-100">
+                {mentorsError}
+              </div>
+            ) : (
+              <div className="grid gap-6 lg:grid-cols-2">
+                {mentors.map((mentor) => (
+                  <div
+                    key={mentor.id}
+                    className="rounded-2xl border border-gray-800 bg-gradient-to-br from-gray-900/90 via-gray-900/70 to-gray-800/60 p-6 shadow-lg shadow-blue-900/20"
+                  >
+                    <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                      <div>
+                        <h3 className="text-2xl font-semibold text-white">{mentor.name}</h3>
+                        {mentor.location && (
+                          <p className="mt-1 text-sm text-blue-300">{mentor.location}</p>
+                        )}
+                      </div>
+                      <div className="inline-flex items-center gap-2 rounded-full bg-blue-500/10 px-4 py-2 text-sm text-blue-200 capitalize">
+                        <Star className="h-4 w-4 text-amber-400" />
+                        <span>{mentor.availability_status}</span>
+                      </div>
+                    </div>
+
+                    <p className="mt-4 text-gray-300">
+                      {Array.isArray(mentor.expertise_areas)
+                        ? mentor.expertise_areas.join(' • ')
+                        : mentor.expertise_areas || 'Expert guidance across core startup functions.'}
+                    </p>
+
+                    <div className="mt-6 flex flex-col gap-3 border-t border-gray-800 pt-4 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="space-y-1 text-sm text-gray-300">
+                        <a href={`mailto:${mentor.email}`} className="flex items-center gap-2 text-blue-300 hover:text-blue-200">
+                          <Mail className="h-4 w-4" />
+                          {mentor.email}
+                        </a>
+                        {mentor.phone && (
+                          <a href={`tel:${mentor.phone}`} className="flex items-center gap-2 text-blue-300 hover:text-blue-200">
+                            <Phone className="h-4 w-4" />
+                            {mentor.phone}
+                          </a>
+                        )}
+                      </div>
+                      <button className="rounded-lg bg-blue-600 px-5 py-2 text-sm font-semibold text-white transition hover:bg-blue-700">
+                        Schedule intro call
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
       );
     }
 
@@ -812,6 +1310,16 @@ const ChatInterface = ({ onNavigate }: ChatInterfaceProps) => {
                     : 'bg-gray-800 text-gray-100'
                 }`}>
                   <p className="whitespace-pre-line">{message.content}</p>
+                  
+                  {/* Show loading animation if this is the processing message and documents are still generating */}
+                  {message.type === 'ai' && 
+                   message.content.includes('Processing your information and generating your business documents') &&
+                   (flowStage === 'generating' || flowStage === 'documents') &&
+                   documents.some(doc => doc.status === 'generating') && (
+                    <div className="mt-4 pt-4 border-t border-gray-700">
+                      <DocumentGenerationLoader documents={documents} />
+                    </div>
+                  )}
 
                   {/* Single Mentor Card */}
                   {message.mentorCard && (
@@ -869,25 +1377,83 @@ const ChatInterface = ({ onNavigate }: ChatInterfaceProps) => {
               </div>
             </div>
           ))}
+          
+          {/* Show floating loader if documents are generating and we haven't shown the processing message yet */}
+          {(flowStage === 'generating' || flowStage === 'documents') && 
+           documents.length > 0 && 
+           documents.some(doc => doc.status === 'generating') && 
+           !messages.some(msg => msg.content.includes('Processing your information and generating your business documents')) && (
+            <div className="flex justify-start">
+              <div className="max-w-3xl flex flex-row items-start space-x-3">
+                <div className="w-8 h-8 rounded-full flex items-center justify-center bg-gray-700">
+                  <Bot className="h-4 w-4" />
+                </div>
+                <div className="rounded-lg p-4 bg-gray-800 text-gray-100">
+                  <p className="mb-4">Processing your information and generating your business documents...</p>
+                  <DocumentGenerationLoader documents={documents} />
+                </div>
+              </div>
+            </div>
+          )}
+          
           <div ref={messagesEndRef} />
         </div>
 
         {/* Input Area */}
         <div className="border-t border-gray-800 p-4">
+          {/* Show message while documents are generating */}
+          {(flowStage === 'generating' || flowStage === 'documents') && 
+           documents.some(doc => doc.status === 'generating') && (
+            <div className="mb-3 p-3 bg-blue-500/10 border border-blue-500/20 rounded-lg">
+              <div className="flex items-center space-x-2">
+                <Loader2 className="h-4 w-4 text-blue-400 animate-spin" />
+                <p className="text-sm text-blue-300">
+                  Please wait while we generate your documents. This may take a few moments...
+                </p>
+              </div>
+            </div>
+          )}
+          
           <div className="flex items-center space-x-2">
             <div className="flex-1 relative">
               <input
                 type="text"
                 value={inputText}
                 onChange={(e) => setInputText(e.target.value)}
-                onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
-                placeholder="Type your message..."
-                className="w-full bg-gray-800 border border-gray-600 rounded-lg px-4 py-2 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                onKeyPress={(e) => {
+                  // Disable input while documents are generating
+                  if ((flowStage === 'generating' || flowStage === 'documents') && 
+                      documents.some(doc => doc.status === 'generating')) {
+                    return;
+                  }
+                  if (e.key === 'Enter') handleSendMessage();
+                }}
+                placeholder={
+                  (flowStage === 'generating' || flowStage === 'documents') && 
+                  documents.some(doc => doc.status === 'generating')
+                    ? "Generating documents... Please wait"
+                    : "Type your message..."
+                }
+                disabled={(flowStage === 'generating' || flowStage === 'documents') && 
+                         documents.some(doc => doc.status === 'generating')}
+                className={`w-full bg-gray-800 border border-gray-600 rounded-lg px-4 py-2 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+                  (flowStage === 'generating' || flowStage === 'documents') && 
+                  documents.some(doc => doc.status === 'generating')
+                    ? 'opacity-50 cursor-not-allowed'
+                    : ''
+                }`}
               />
             </div>
             <button
               onClick={handleSendMessage}
-              className="bg-blue-600 hover:bg-blue-700 p-2 rounded-lg transition-colors duration-200"
+              disabled={(flowStage === 'generating' || flowStage === 'documents') && 
+                       documents.some(doc => doc.status === 'generating')}
+              className={`p-2 rounded-lg transition-colors duration-200 ${
+                (flowStage === 'generating' || flowStage === 'documents') && 
+                documents.some(doc => doc.status === 'generating')
+                  ? 'bg-gray-700 cursor-not-allowed opacity-50'
+                  : 'bg-blue-600 hover:bg-blue-700'
+              }`}
             >
               <Send className="h-5 w-5" />
             </button>
@@ -908,16 +1474,32 @@ const ChatInterface = ({ onNavigate }: ChatInterfaceProps) => {
               <span className="text-xl font-bold text-white">StartUP Companion</span>
             </div>
 
-            <div className="flex items-center space-x-4">
-              {flowStage === 'documents' || flowStage === 'rating' ? (
+            <div className="flex items-center space-x-3">
+              <button
+                onClick={() => { setViewMode('history'); loadHistoryDocuments(); }}
+                className="flex items-center space-x-2 rounded-lg px-3 py-2 text-gray-300 transition-colors duration-200 hover:bg-gray-800/80 hover:text-white"
+              >
+                <History className="h-5 w-5" />
+                <span>History</span>
+              </button>
+
+              {(flowStage === 'documents' || flowStage === 'rating' || hasGeneratedDocuments) && (
                 <button
-                  onClick={() => setViewMode('dashboard')}
-                  className="flex items-center space-x-2 text-gray-300 hover:text-white transition-colors duration-200"
+                  onClick={handleOpenDashboard}
+                  className="flex items-center space-x-2 rounded-lg px-3 py-2 text-gray-300 transition-colors duration-200 hover:bg-gray-800/80 hover:text-white"
                 >
                   <FileCheck className="h-5 w-5" />
                   <span>Documents</span>
                 </button>
-              ) : null}
+              )}
+
+              <button
+                onClick={handleOpenMentors}
+                className="flex items-center space-x-2 rounded-lg px-3 py-2 text-gray-300 transition-colors duration-200 hover:bg-gray-800/80 hover:text-white"
+              >
+                <Users className="h-5 w-5" />
+                <span>Mentors</span>
+              </button>
 
               <button
                 onClick={handleLogout}

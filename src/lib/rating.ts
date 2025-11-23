@@ -44,7 +44,7 @@ export async function getMentorForService(serviceType: string): Promise<Mentor |
       .from('mentors')
       .select('*')
       .contains('specialization', [serviceType])
-      .eq('availability_status', 'active')
+      .eq('availability_status', 'available')
       .order('average_rating', { ascending: false })
       .limit(1)
       .maybeSingle();
